@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>자기소개</title>
+  <style>
+    body {
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      background: #f6f7fb;
+      margin: 0;
+      padding: 24px;
+      color: #111827;
+    }
+    .card {
+      max-width: 720px;
+      margin: 0 auto;
+      background: #ffffff;
+      border-radius: 16px;
+      padding: 24px;
+      box-shadow: 0 8px 24px rgba(17, 24, 39, 0.08);
+      border: 1px solid rgba(17, 24, 39, 0.06);
+    }
+    .header {
+      display: flex;
+      gap: 18px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .avatar {
+      width: 120px;
+      height: 120px;
+      border-radius: 50%;
+      object-fit: cover;
+      border: 3px solid #e5e7eb;
+      background: #f3f4f6;
+    }
+    h1 {
+      margin: 0 0 6px 0;
+      font-size: 28px;
+    }
+    .intro {
+      margin-top: 14px;
+      background: #f9fafb;
+      border: 1px solid rgba(17, 24, 39, 0.06);
+      padding: 14px 16px;
+      border-radius: 12px;
+      line-height: 1.6;
+    }
+    .contact {
+      margin-top: 18px;
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 12px;
+      border-radius: 999px;
+      background: #eef2ff;
+      border: 1px solid rgba(99, 102, 241, 0.25);
+      color: #3730a3;
+      text-decoration: none;
+      font-weight: 600;
+    }
+    .label {
+      font-size: 14px;
+      color: #6b7280;
+      margin-bottom: 6px;
+    }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <section class="header">
+      <!-- 사진: 아래 src 값을 자신의 이미지 경로로 바꾸세요 -->
+      <img class="avatar" src="photo.jpg" alt="프로필 사진" />
+      <div>
+        <div class="label">이름</div>
+        <h1>김탑석석</h1>
+        <div class="label">간단한 소개</div>
+        <div class="intro">
+          안녕하세요! 대충 남 똥닦는 일을합니다.
+          새로운 기술을 꾸준히 배우며 작은 개선을 모아 큰 결과를 만들고 싶어요.
+        </div>
+      </div>
+    </section>
+    <section class="contact">
+      <div>
+        <div class="label">이메일</div>
+        <a class="pill" href="mailto:example@gmail.com">
+          example@gmail.com
+        </a>
+      </div>
+    </section>
+  </main>
+</body>
+</html>
