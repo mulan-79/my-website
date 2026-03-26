@@ -135,7 +135,6 @@
     }
     .time{color:var(--muted);font-size:12px}
     .content{margin-top:8px;white-space:pre-wrap;line-height:1.6;color:#e9efff}
-    .miniRow{display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap}
     .chip{
       font-size:12px;
       padding:5px 9px;border-radius:999px;
@@ -145,6 +144,13 @@
     }
     footer{margin-top:16px;color:var(--muted);font-size:12px;text-align:center}
     a{color:#c4b5fd}
+    .err{
+      margin-top:8px;padding:10px 12px;border-radius:12px;
+      border:1px solid rgba(239,68,68,.35);
+      background: rgba(239,68,68,.08);
+      color:#fecaca;
+      font-size:13px;line-height:1.5;
+    }
   </style>
 </head>
 <body>
@@ -152,7 +158,7 @@
     <header class="hero">
       <div class="top">
         <span class="badge">아재방 · 환영합니다</span>
-        <span class="chip" id="storageState">저장: 로컬(브라우저)</span>
+        <span class="chip" id="storageState">저장: 준비 중…</span>
       </div>
       <h1>아재들의 수다, 추억, 꿀팁이 모이는 곳</h1>
       <p class="subtitle">
@@ -167,17 +173,18 @@
     <main class="grid">
       <section class="card" aria-label="글 남기기">
         <h2>글 남기기</h2>
+        <div id="firebaseHint" class="hint" style="display:none"></div>
         <label for="nickname">닉네임</label>
         <input id="nickname" maxlength="20" placeholder="예: 동네아재, 퇴근전사" />
         <label for="message">내용</label>
         <textarea id="message" maxlength="500" placeholder="아재방에 남길 이야기를 적어주세요. (최대 500자)"></textarea>
         <div class="row">
-          <button class="btn" id="submitBtn">등록하기</button>
+          <button class="btn" id="submitBtn" disabled>등록하기</button>
           <button class="btn secondary" id="clearDraftBtn" type="button">임시글 비우기</button>
         </div>
-        <p class="hint">
-          - 글은 이 브라우저에 저장됩니다(서버/로그인 없음).<br />
-          - 다른 사람과 “실시간 공유”가 필요하면 서버(백엔드) 연결이 추가로 필요해요.
+        <p class="hint" id="modeHint">
+          - Firebase를 켜면 여러 사람이 같은 글목록을 봅니다.<br />
+          - 설정이 비어 있으면 예전처럼 이 브라우저에만 저장됩니다.
         </p>
       </section>
       <section class="card" aria-label="글 목록">
@@ -191,6 +198,7 @@
             <button class="btn danger" id="wipeBtn" type="button">전체 삭제</button>
           </div>
         </div>
+        <div id="errBox" class="err" style="display:none"></div>
         <div class="posts" id="posts"></div>
       </section>
     </main>
@@ -198,9 +206,21 @@
       © 아재방 · 관리: 프로그래머 쥬리오
     </footer>
   </div>
-  <script>
+  <script type="module">
+    /** Firebase 콘솔 → 프로젝트 설정 → 일반 → 내 앱에서 복사 */
+    const firebaseConfig = {
+      apiKey: "AIzaSyCAb7SxmfKlde2pmmzsIe8-jiiSJxUIHpM",
+      authDomain: "bbbb-88c50.firebaseapp.com",
+      projectId: "bbbb-88c50",
+      storageBucket: "bbbb-88c50.firebasestorage.app",
+      messagingSenderId: "436025243797",
+      appId: "1:436025243797:web:bb2870872c1d445399839c"
+    };
+
     const STORAGE_KEY = "ajaebang_posts_v1";
     const DRAFT_KEY = "ajaebang_draft_v1";
+    const COLLECTION = "posts";
+
     const elNickname = document.getElementById("nickname");
     const elMessage = document.getElementById("message");
     const elSubmit = document.getElementById("submitBtn");
@@ -210,16 +230,27 @@
     const elExport = document.getElementById("exportBtn");
     const elClearDraft = document.getElementById("clearDraftBtn");
     const elStorageState = document.getElementById("storageState");
+    const elErr = document.getElementById("errBox");
+    const elModeHint = document.getElementById("modeHint");
+    const elFirebaseHint = document.getElementById("firebaseHint");
+
+    const useFirebase = Boolean(
+      String(firebaseConfig.apiKey || "").trim() &&
+      String(firebaseConfig.projectId || "").trim()
+    );
+
+    function showErr(msg) {
+      if (!msg) {
+        elErr.style.display = "none";
+        elErr.textContent = "";
+        return;
+      }
+      elErr.style.display = "block";
+      elErr.textContent = msg;
+    }
+
     function safeParse(json, fallback) {
       try { return JSON.parse(json); } catch { return fallback; }
-    }
-    function loadPosts() {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      const posts = safeParse(raw || "[]", []);
-      return Array.isArray(posts) ? posts : [];
-    }
-    function savePosts(posts) {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(posts));
     }
     function formatTime(ts) {
       const d = new Date(ts);
@@ -233,8 +264,13 @@
         .replaceAll('"',"&quot;")
         .replaceAll("'","&#039;");
     }
+
+    let currentPosts = [];
+    let currentUid = null;
+    let unsubscribeFirestore = null;
+
     function render() {
-      const posts = loadPosts().sort((a,b) => b.createdAt - a.createdAt);
+      const posts = currentPosts.slice().sort((a,b) => b.createdAt - a.createdAt);
       elCount.textContent = posts.length + "개";
       if (!posts.length) {
         elPosts.innerHTML = `
@@ -249,20 +285,27 @@
         const nick = escapeHtml(p.nickname || "익명아재");
         const content = escapeHtml(p.content || "");
         const time = formatTime(p.createdAt);
+        const canDelete = useFirebase
+          ? (currentUid && p.authorId === currentUid)
+          : true;
+        const delBtn = canDelete
+          ? `<button class="btn secondary" data-action="delete" type="button">삭제</button>`
+          : `<span class="chip" title="본인 글만 삭제할 수 있어요">삭제 불가</span>`;
         return `
-          <article class="post" data-id="${p.id}">
+          <article class="post" data-id="${escapeHtml(p.id)}">
             <div class="postHead">
               <div>
                 <div class="name">${nick} <span class="chip">아재</span></div>
                 <div class="time">${time}</div>
               </div>
-              <button class="btn secondary" data-action="delete" type="button">삭제</button>
+              ${delBtn}
             </div>
             <div class="content">${content}</div>
           </article>
         `;
       }).join("");
     }
+
     function setDraft() {
       const draft = { nickname: elNickname.value, message: elMessage.value };
       localStorage.setItem(DRAFT_KEY, JSON.stringify(draft));
@@ -274,10 +317,20 @@
         if (typeof draft.message === "string") elMessage.value = draft.message;
       }
     }
+
+    function loadPostsLocal() {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      const posts = safeParse(raw || "[]", []);
+      return Array.isArray(posts) ? posts : [];
+    }
+    function savePostsLocal(posts) {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(posts));
+    }
     function uuid() {
       return "p_" + Math.random().toString(16).slice(2) + "_" + Date.now().toString(16);
     }
-    function updateStorageBadge() {
+
+    function updateStorageBadgeLocal() {
       try {
         localStorage.setItem("__t", "1");
         localStorage.removeItem("__t");
@@ -286,59 +339,241 @@
         elStorageState.textContent = "저장: 꺼짐(브라우저 설정)";
       }
     }
-    elSubmit.addEventListener("click", () => {
-      const nickname = (elNickname.value || "").trim().slice(0, 20) || "익명아재";
-      const content = (elMessage.value || "").trim().slice(0, 500);
-      if (!content) {
-        alert("내용을 입력해 주세요.");
-        elMessage.focus();
-        return;
-      }
-      const posts = loadPosts();
-      posts.push({
-        id: uuid(),
-        nickname,
-        content,
-        createdAt: Date.now()
-      });
-      savePosts(posts);
-      elMessage.value = "";
-      setDraft();
+
+    async function runLocal() {
+      elSubmit.disabled = false;
+      updateStorageBadgeLocal();
+      elModeHint.innerHTML =
+        "- 글은 이 브라우저에만 저장됩니다.<br />" +
+        "- <code>public/index.html</code>의 <code>firebaseConfig</code>를 채우면 Firebase 공유 모드로 전환됩니다.";
+      elWipe.textContent = "전체 삭제";
+      currentPosts = loadPostsLocal().map(p => ({
+        ...p,
+        authorId: p.authorId || "local"
+      }));
       render();
-    });
-    elPosts.addEventListener("click", (e) => {
-      const btn = e.target.closest("button[data-action]");
-      if (!btn) return;
-      const article = e.target.closest("article.post");
-      if (!article) return;
-      const id = article.getAttribute("data-id");
-      if (!id) return;
-      if (btn.dataset.action === "delete") {
+
+      elSubmit.addEventListener("click", () => {
+        const nickname = (elNickname.value || "").trim().slice(0, 20) || "익명아재";
+        const content = (elMessage.value || "").trim().slice(0, 500);
+        if (!content) {
+          alert("내용을 입력해 주세요.");
+          elMessage.focus();
+          return;
+        }
+        const posts = loadPostsLocal();
+        posts.push({ id: uuid(), nickname, content, createdAt: Date.now(), authorId: "local" });
+        savePostsLocal(posts);
+        currentPosts = posts;
+        elMessage.value = "";
+        setDraft();
+        render();
+      });
+
+      elPosts.addEventListener("click", (e) => {
+        const btn = e.target.closest("button[data-action]");
+        if (!btn) return;
+        const article = e.target.closest("article.post");
+        if (!article) return;
+        const id = article.getAttribute("data-id");
+        if (!id) return;
+        if (btn.dataset.action === "delete") {
+          const ok = confirm("이 글을 삭제할까요?");
+          if (!ok) return;
+          const posts = loadPostsLocal().filter(p => p.id !== id);
+          savePostsLocal(posts);
+          currentPosts = posts;
+          render();
+        }
+      });
+
+      elWipe.addEventListener("click", () => {
+        const ok = confirm("이 브라우저에 저장된 글을 모두 삭제할까요? (되돌릴 수 없음)");
+        if (!ok) return;
+        localStorage.removeItem(STORAGE_KEY);
+        currentPosts = [];
+        render();
+      });
+
+      elExport.addEventListener("click", () => {
+        const posts = loadPostsLocal().sort((a,b) => b.createdAt - a.createdAt);
+        const blob = new Blob([JSON.stringify(posts, null, 2)], { type: "application/json;charset=utf-8" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "ajaebang-posts.json";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+      });
+    }
+
+    async function runFirebase() {
+      const [
+        { initializeApp },
+        { getAuth, signInAnonymously, onAuthStateChanged },
+        {
+          getFirestore,
+          collection,
+          addDoc,
+          deleteDoc,
+          doc,
+          query,
+          orderBy,
+          limit,
+          onSnapshot,
+          serverTimestamp,
+          where,
+          getDocs,
+          writeBatch
+        }
+      ] = await Promise.all([
+        import("https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js"),
+        import("https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js"),
+        import("https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js")
+      ]);
+
+      const app = initializeApp(firebaseConfig);
+      const auth = getAuth(app);
+      const db = getFirestore(app);
+
+      elStorageState.textContent = "저장: Firebase 연결 중…";
+      elSubmit.disabled = true;
+      elModeHint.innerHTML =
+        "- 글은 <strong>Firebase Firestore</strong>에 저장되어 여러 사람이 함께 봅니다.<br />" +
+        "- 삭제는 <strong>본인이 쓴 글</strong>만 가능합니다(익명 로그인 기준).";
+      elWipe.textContent = "내 글만 삭제";
+      elFirebaseHint.style.display = "block";
+      elFirebaseHint.innerHTML =
+        "Firebase 콘솔에서 <strong>Authentication → 익명</strong> 사용 설정과 " +
+        "<strong>Firestore</strong> 생성, 그리고 <code>firestore.rules</code> 규칙 배포가 필요합니다.";
+
+      onAuthStateChanged(auth, async (user) => {
+        showErr("");
+        if (!user) {
+          try {
+            await signInAnonymously(auth);
+          } catch (e) {
+            showErr("익명 로그인 실패: " + (e && e.message ? e.message : String(e)));
+            elSubmit.disabled = true;
+          }
+          return;
+        }
+        currentUid = user.uid;
+        elStorageState.textContent = "저장: Firebase (실시간 공유)";
+        elSubmit.disabled = false;
+
+        const q = query(
+          collection(db, COLLECTION),
+          orderBy("createdAt", "desc"),
+          limit(100)
+        );
+
+        if (unsubscribeFirestore) unsubscribeFirestore();
+        unsubscribeFirestore = onSnapshot(q, (snap) => {
+          showErr("");
+          currentPosts = [];
+          snap.forEach((d) => {
+            const x = d.data();
+            const createdAt = x.createdAt && typeof x.createdAt.toMillis === "function"
+              ? x.createdAt.toMillis()
+              : Date.now();
+            currentPosts.push({
+              id: d.id,
+              nickname: x.nickname,
+              content: x.content,
+              createdAt,
+              authorId: x.authorId
+            });
+          });
+          render();
+        }, (err) => {
+          showErr("Firestore: " + (err && err.message ? err.message : String(err)));
+        });
+      });
+
+      elSubmit.addEventListener("click", async () => {
+        if (!auth.currentUser) {
+          alert("연결을 기다려 주세요.");
+          return;
+        }
+        const nickname = (elNickname.value || "").trim().slice(0, 20) || "익명아재";
+        const content = (elMessage.value || "").trim().slice(0, 500);
+        if (!content) {
+          alert("내용을 입력해 주세요.");
+          elMessage.focus();
+          return;
+        }
+        elSubmit.disabled = true;
+        try {
+          await addDoc(collection(db, COLLECTION), {
+            nickname,
+            content,
+            authorId: auth.currentUser.uid,
+            createdAt: serverTimestamp()
+          });
+          elMessage.value = "";
+          setDraft();
+        } catch (e) {
+          alert("등록 실패: " + (e && e.message ? e.message : String(e)));
+        } finally {
+          elSubmit.disabled = false;
+        }
+      });
+
+      elPosts.addEventListener("click", async (e) => {
+        const btn = e.target.closest("button[data-action]");
+        if (!btn || btn.dataset.action !== "delete") return;
+        const article = e.target.closest("article.post");
+        if (!article) return;
+        const id = article.getAttribute("data-id");
+        if (!id || !auth.currentUser) return;
+        const post = currentPosts.find(p => p.id === id);
+        if (!post || post.authorId !== auth.currentUser.uid) return;
         const ok = confirm("이 글을 삭제할까요?");
         if (!ok) return;
-        const posts = loadPosts().filter(p => p.id !== id);
-        savePosts(posts);
-        render();
-      }
-    });
-    elWipe.addEventListener("click", () => {
-      const ok = confirm("전체 글을 삭제할까요? (되돌릴 수 없음)");
-      if (!ok) return;
-      localStorage.removeItem(STORAGE_KEY);
-      render();
-    });
-    elExport.addEventListener("click", () => {
-      const posts = loadPosts().sort((a,b) => b.createdAt - a.createdAt);
-      const blob = new Blob([JSON.stringify(posts, null, 2)], { type: "application/json;charset=utf-8" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = "ajaebang-posts.json";
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
-    });
+        try {
+          await deleteDoc(doc(db, COLLECTION, id));
+        } catch (err) {
+          alert("삭제 실패: " + (err && err.message ? err.message : String(err)));
+        }
+      });
+
+      elWipe.addEventListener("click", async () => {
+        if (!auth.currentUser) return;
+        const ok = confirm("내가 쓴 글만 모두 삭제할까요? (다른 사람 글은 지워지지 않습니다)");
+        if (!ok) return;
+        const uid = auth.currentUser.uid;
+        try {
+          const qMy = query(collection(db, COLLECTION), where("authorId", "==", uid));
+          const snap = await getDocs(qMy);
+          if (snap.empty) {
+            alert("삭제할 내 글이 없습니다.");
+            return;
+          }
+          const batch = writeBatch(db);
+          snap.docs.forEach((d) => batch.delete(d.ref));
+          await batch.commit();
+        } catch (e) {
+          alert("삭제 실패: " + (e && e.message ? e.message : String(e)));
+        }
+      });
+
+      elExport.addEventListener("click", () => {
+        const posts = currentPosts.slice().sort((a,b) => b.createdAt - a.createdAt);
+        const blob = new Blob([JSON.stringify(posts, null, 2)], { type: "application/json;charset=utf-8" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "ajaebang-firebase-posts.json";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+      });
+    }
+
     elClearDraft.addEventListener("click", () => {
       elMessage.value = "";
       setDraft();
@@ -346,9 +581,18 @@
     });
     elNickname.addEventListener("input", setDraft);
     elMessage.addEventListener("input", setDraft);
-    updateStorageBadge();
+
     loadDraft();
-    render();
+
+    if (useFirebase) {
+      runFirebase().catch((e) => {
+        showErr("Firebase 초기화 실패: " + (e && e.message ? e.message : String(e)));
+        elSubmit.disabled = false;
+        elStorageState.textContent = "저장: 오류 (로컬로 전환하려면 firebaseConfig 비우기)";
+      });
+    } else {
+      runLocal();
+    }
   </script>
 </body>
 </html>
